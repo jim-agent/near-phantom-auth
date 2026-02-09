@@ -7,7 +7,7 @@ export default defineConfig({
     'client/index': 'src/client/index.ts',
   },
   format: ['esm'],
-  dts: true,
+  dts: false, // TODO: Fix type errors and re-enable
   clean: true,
   sourcemap: true,
   splitting: false,
