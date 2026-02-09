@@ -1,0 +1,84 @@
+{
+  "name": "@vitalpoint/near-anon-auth",
+  "version": "0.1.0",
+  "description": "Anonymous passkey authentication with NEAR MPC accounts and decentralized recovery",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server/index.js",
+      "types": "./dist/server/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client/index.js",
+      "types": "./dist/client/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "near",
+    "authentication",
+    "passkey",
+    "webauthn",
+    "mpc",
+    "anonymous",
+    "decentralized",
+    "web3"
+  ],
+  "author": "VitalPoint AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jim-agent/near-anon-auth.git"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "^11.0.0",
+    "@near-js/crypto": "^2.0.1",
+    "@near-js/keystores": "^0.2.1",
+    "@near-js/providers": "^1.0.1",
+    "@near-js/signers": "^0.2.1",
+    "@near-js/transactions": "^2.0.1",
+    "cookie": "^1.0.2",
+    "tweetnacl": "^1.0.3",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/cookie": "^1.0.0",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "express": "^4.18.0 || ^5.0.0",
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
