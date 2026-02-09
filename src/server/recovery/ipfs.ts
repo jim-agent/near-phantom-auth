@@ -3,6 +3,11 @@
  * 
  * Encrypts recovery data with user's password and stores on IPFS.
  * User needs password + CID to recover.
+ * 
+ * Supported pinning services:
+ * - Pinata (https://pinata.cloud)
+ * - web3.storage (https://web3.storage)
+ * - Infura (https://infura.io)
  */
 
 import { randomBytes, createCipheriv, createDecipheriv, scrypt } from 'crypto';
@@ -12,9 +17,15 @@ const scryptAsync = promisify(scrypt);
 
 export interface IPFSRecoveryConfig {
   pinningService: 'pinata' | 'web3storage' | 'infura' | 'custom';
+  /** API key (required for pinata, web3storage, infura) */
   apiKey?: string;
+  /** API secret (required for pinata, infura) */
   apiSecret?: string;
+  /** Project ID (required for infura) */
+  projectId?: string;
+  /** Custom pinning function */
   customPin?: (data: Uint8Array) => Promise<string>;
+  /** Custom fetch function */
   customFetch?: (cid: string) => Promise<Uint8Array>;
 }
 
@@ -104,8 +115,13 @@ export async function decryptRecoveryData(
   }
 }
 
+// ============================================
+// Pinning Services
+// ============================================
+
 /**
  * Pin data to IPFS using Pinata
+ * https://docs.pinata.cloud/api-reference/endpoint/pin-file-to-ipfs
  */
 async function pinToPinata(
   data: Uint8Array,
@@ -113,7 +129,8 @@ async function pinToPinata(
   apiSecret: string
 ): Promise<string> {
   const formData = new FormData();
-  formData.append('file', new Blob([data]), 'recovery.json');
+  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  formData.append('file', new Blob([buffer]), 'recovery.json');
   
   const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
     method: 'POST',
@@ -125,7 +142,8 @@ async function pinToPinata(
   });
   
   if (!response.ok) {
-    throw new Error(`Pinata error: ${response.status}`);
+    const error = await response.text();
+    throw new Error(`Pinata error: ${response.status} - ${error}`);
   }
   
   const result = await response.json() as { IpfsHash: string };
@@ -133,19 +151,87 @@ async function pinToPinata(
 }
 
 /**
+ * Pin data to IPFS using web3.storage
+ * https://web3.storage/docs/how-to/upload/
+ */
+async function pinToWeb3Storage(
+  data: Uint8Array,
+  apiToken: string
+): Promise<string> {
+  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  
+  const response = await fetch('https://api.web3.storage/upload', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiToken}`,
+      'Content-Type': 'application/octet-stream',
+      'X-Name': 'phantom-recovery.json',
+    },
+    body: buffer,
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`web3.storage error: ${response.status} - ${error}`);
+  }
+  
+  const result = await response.json() as { cid: string };
+  return result.cid;
+}
+
+/**
+ * Pin data to IPFS using Infura
+ * https://docs.infura.io/infura/networks/ipfs/http-api-methods/add
+ */
+async function pinToInfura(
+  data: Uint8Array,
+  projectId: string,
+  projectSecret: string
+): Promise<string> {
+  const formData = new FormData();
+  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  formData.append('file', new Blob([buffer]), 'recovery.json');
+  
+  const auth = Buffer.from(`${projectId}:${projectSecret}`).toString('base64');
+  
+  const response = await fetch('https://ipfs.infura.io:5001/api/v0/add', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+    },
+    body: formData,
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Infura error: ${response.status} - ${error}`);
+  }
+  
+  const result = await response.json() as { Hash: string };
+  return result.Hash;
+}
+
+/**
  * Fetch data from IPFS gateway
  */
 async function fetchFromIPFS(cid: string): Promise<Uint8Array> {
-  // Try multiple gateways
+  // Try multiple gateways for reliability
   const gateways = [
     `https://gateway.pinata.cloud/ipfs/${cid}`,
+    `https://w3s.link/ipfs/${cid}`,
+    `https://ipfs.infura.io/ipfs/${cid}`,
     `https://ipfs.io/ipfs/${cid}`,
     `https://cloudflare-ipfs.com/ipfs/${cid}`,
+    `https://dweb.link/ipfs/${cid}`,
   ];
   
   for (const gateway of gateways) {
     try {
-      const response = await fetch(gateway);
+      const response = await fetch(gateway, {
+        headers: {
+          'Accept': 'application/octet-stream',
+        },
+      });
       if (response.ok) {
         return new Uint8Array(await response.arrayBuffer());
       }
@@ -154,7 +240,7 @@ async function fetchFromIPFS(cid: string): Promise<Uint8Array> {
     }
   }
   
-  throw new Error('Failed to fetch from IPFS');
+  throw new Error('Failed to fetch from IPFS - tried all gateways');
 }
 
 /**
@@ -183,6 +269,7 @@ export interface IPFSRecoveryManager {
   validatePassword(password: string): {
     valid: boolean;
     errors: string[];
+    strength: 'weak' | 'medium' | 'strong';
   };
 }
 
@@ -204,11 +291,22 @@ export function createIPFSRecoveryManager(
         return pinToPinata(data, config.apiKey, config.apiSecret);
       
       case 'web3storage':
+        if (!config.apiKey) {
+          throw new Error('web3.storage requires apiKey (API token)');
+        }
+        return pinToWeb3Storage(data, config.apiKey);
+      
       case 'infura':
-        throw new Error(`${config.pinningService} not yet implemented`);
+        if (!config.projectId || !config.apiSecret) {
+          throw new Error('Infura requires projectId and apiSecret');
+        }
+        return pinToInfura(data, config.projectId, config.apiSecret);
+      
+      case 'custom':
+        throw new Error('Custom pinning requires customPin function');
       
       default:
-        throw new Error('No pinning service configured');
+        throw new Error(`Unknown pinning service: ${config.pinningService}`);
     }
   }
 
@@ -217,6 +315,21 @@ export function createIPFSRecoveryManager(
       return config.customFetch(cid);
     }
     return fetchFromIPFS(cid);
+  }
+
+  function calculatePasswordStrength(password: string): 'weak' | 'medium' | 'strong' {
+    let score = 0;
+    
+    if (password.length >= 12) score++;
+    if (password.length >= 16) score++;
+    if (/[a-z]/.test(password)) score++;
+    if (/[A-Z]/.test(password)) score++;
+    if (/[0-9]/.test(password)) score++;
+    if (/[^a-zA-Z0-9]/.test(password)) score++;
+    
+    if (score <= 2) return 'weak';
+    if (score <= 4) return 'medium';
+    return 'strong';
   }
 
   return {
@@ -235,6 +348,8 @@ export function createIPFSRecoveryManager(
       
       // Pin to IPFS
       const cid = await pinData(data);
+      
+      console.log(`[IPFS] Recovery backup created: ${cid} (${config.pinningService})`);
       
       return { cid };
     },
@@ -271,9 +386,12 @@ export function createIPFSRecoveryManager(
         errors.push('Password must contain numbers');
       }
       
+      const strength = calculatePasswordStrength(password);
+      
       return {
         valid: errors.length === 0,
         errors,
+        strength,
       };
     },
   };

@@ -13,6 +13,7 @@ import type {
   Challenge,
   RecoveryData,
   RecoveryType,
+  AuthenticatorTransport,
 } from '../../../types/index.js';
 
 export interface PostgresConfig {
@@ -242,15 +243,15 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
         [userId]
       );
       
-      return result.rows.map((row) => ({
-        credentialId: row.credential_id,
-        userId: row.user_id,
-        publicKey: row.public_key,
-        counter: row.counter,
-        deviceType: row.device_type,
-        backedUp: row.backed_up,
-        transports: row.transports,
-        createdAt: row.created_at,
+      return result.rows.map((row: Record<string, unknown>) => ({
+        credentialId: row.credential_id as string,
+        userId: row.user_id as string,
+        publicKey: row.public_key as Uint8Array,
+        counter: row.counter as number,
+        deviceType: row.device_type as 'singleDevice' | 'multiDevice',
+        backedUp: row.backed_up as boolean,
+        transports: row.transports as AuthenticatorTransport[] | undefined,
+        createdAt: row.created_at as Date,
       }));
     },
 

@@ -1,4 +1,4 @@
-# near-anon-auth
+# near-phantom-auth
 
 Anonymous passkey authentication with NEAR MPC accounts and decentralized recovery.
 
@@ -17,7 +17,7 @@ Anonymous passkey authentication with NEAR MPC accounts and decentralized recove
 ## Installation
 
 ```bash
-npm install @vitalpoint/near-anon-auth
+npm install @vitalpoint/near-phantom-auth
 ```
 
 ## Quick Start
@@ -26,7 +26,7 @@ npm install @vitalpoint/near-anon-auth
 
 ```typescript
 import express from 'express';
-import { createAnonAuth } from '@vitalpoint/near-anon-auth/server';
+import { createAnonAuth } from '@vitalpoint/near-phantom-auth/server';
 
 const app = express();
 
@@ -72,7 +72,7 @@ app.listen(3000);
 ### Client (React)
 
 ```tsx
-import { AnonAuthProvider, useAnonAuth } from '@vitalpoint/near-anon-auth/client';
+import { AnonAuthProvider, useAnonAuth } from '@vitalpoint/near-phantom-auth/client';
 
 function App() {
   return (

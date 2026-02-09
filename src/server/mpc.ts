@@ -240,7 +240,11 @@ export class MPCAccountManager {
       recoveryWalletId,
     });
 
-    // For v1, we'll implement this when we have the full MPC signing flow
+    // TODO: Implement full MPC signing flow
+    // For now, mark as pending
+    void nearAccountId;
+    void recoveryWalletId;
+    
     return {
       success: true,
       txHash: `pending-${Date.now()}`,
