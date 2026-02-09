@@ -56,7 +56,15 @@ export interface PasskeyManager {
     response: RegistrationResponseJSON
   ): Promise<{
     verified: boolean;
-    passkey?: Passkey;
+    passkeyData?: {
+      credentialId: string;
+      publicKey: Uint8Array;
+      counter: number;
+      deviceType: 'singleDevice' | 'multiDevice';
+      backedUp: boolean;
+      transports?: AuthenticatorTransport[];
+    };
+    tempUserId?: string;
   }>;
   
   startAuthentication(
@@ -87,14 +95,8 @@ export function createPasskeyManager(
 
   return {
     async startRegistration(userId, userDisplayName) {
-      // Get existing passkeys for this user
-      const existingPasskeys = await db.getPasskeysByUserId(userId);
-      
-      const excludeCredentials = existingPasskeys.map((pk) => ({
-        id: pk.credentialId,
-        type: 'public-key' as const,
-        transports: pk.transports,
-      }));
+      // For registration, userId is a temp ID - user doesn't exist yet
+      // We store it in metadata, not as a foreign key
       
       const options = await generateRegistrationOptions({
         rpName: config.rpName,
@@ -103,7 +105,7 @@ export function createPasskeyManager(
         userDisplayName: userDisplayName,
         userID: new TextEncoder().encode(userId),
         attestationType: 'none',
-        excludeCredentials,
+        excludeCredentials: [], // No existing passkeys for new user
         authenticatorSelection: {
           residentKey: 'preferred',
           userVerification: 'preferred',
@@ -111,14 +113,15 @@ export function createPasskeyManager(
         },
       } as GenerateRegistrationOptionsOpts);
       
-      // Store challenge
+      // Store challenge - userId goes in metadata since user doesn't exist yet
       const challengeId = randomUUID();
       const challenge: Challenge = {
         id: challengeId,
         challenge: options.challenge,
         type: 'registration',
-        userId,
+        userId: undefined, // Don't set foreign key - user doesn't exist
         expiresAt: new Date(Date.now() + challengeTimeoutMs),
+        metadata: { tempUserId: userId, userDisplayName }, // Store temp ID here
       };
       
       await db.storeChallenge(challenge);
@@ -146,8 +149,10 @@ export function createPasskeyManager(
         throw new Error('Challenge expired');
       }
       
-      if (!challenge.userId) {
-        throw new Error('Challenge missing user ID');
+      // Get temp user ID from metadata (for registration, user doesn't exist yet)
+      const tempUserId = challenge.metadata?.tempUserId as string | undefined;
+      if (!tempUserId) {
+        throw new Error('Challenge missing temp user ID');
       }
       
       // Verify registration
@@ -172,25 +177,22 @@ export function createPasskeyManager(
       
       const { registrationInfo } = verification;
       
-      // Create passkey record
-      const passkeyInput: CreatePasskeyInput = {
-        credentialId: registrationInfo.credential.id,
-        userId: challenge.userId,
-        publicKey: registrationInfo.credential.publicKey,
-        counter: registrationInfo.credential.counter,
-        deviceType: registrationInfo.credentialDeviceType,
-        backedUp: registrationInfo.credentialBackedUp,
-        transports: response.response.transports,
-      };
-      
-      const passkey = await db.createPasskey(passkeyInput);
-      
       // Clean up challenge
       await db.deleteChallenge(challengeId);
       
+      // Return verified data - caller must create user first, then passkey
+      // We return the passkey data but don't save it yet (user doesn't exist)
       return {
         verified: true,
-        passkey,
+        passkeyData: {
+          credentialId: registrationInfo.credential.id,
+          publicKey: registrationInfo.credential.publicKey,
+          counter: registrationInfo.credential.counter,
+          deviceType: registrationInfo.credentialDeviceType,
+          backedUp: registrationInfo.credentialBackedUp,
+          transports: response.response.transports,
+        },
+        tempUserId,
       };
     },
     
