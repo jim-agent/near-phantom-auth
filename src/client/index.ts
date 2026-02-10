@@ -3,24 +3,33 @@
  * 
  * @example
  * ```tsx
- * import { AnonAuthProvider, useAnonAuth } from '@vitalpoint/near-anon-auth/client';
+ * import { AnonAuthProvider, useAnonAuth, OAuthProvider, useOAuth } from '@vitalpoint/near-phantom-auth/client';
  * 
  * function App() {
  *   return (
- *     <AnonAuthProvider apiUrl="/auth">
- *       <MyComponent />
- *     </AnonAuthProvider>
+ *     <OAuthProvider apiUrl="/auth">
+ *       <AnonAuthProvider apiUrl="/auth">
+ *         <MyComponent />
+ *       </AnonAuthProvider>
+ *     </OAuthProvider>
  *   );
  * }
  * 
  * function MyComponent() {
  *   const { isAuthenticated, codename, register, login, logout } = useAnonAuth();
+ *   const { loginWithGoogle, loginWithGithub, loginWithTwitter } = useOAuth();
  *   
  *   if (!isAuthenticated) {
  *     return (
  *       <div>
- *         <button onClick={register}>Register</button>
- *         <button onClick={() => login()}>Sign In</button>
+ *         <h3>Anonymous (HUMINT)</h3>
+ *         <button onClick={register}>Register as Source</button>
+ *         <button onClick={() => login()}>Sign In with Passkey</button>
+ *         
+ *         <h3>Standard User</h3>
+ *         <button onClick={loginWithGoogle}>Sign in with Google</button>
+ *         <button onClick={loginWithGithub}>Sign in with GitHub</button>
+ *         <button onClick={loginWithTwitter}>Sign in with X</button>
  *       </div>
  *     );
  *   }
@@ -35,7 +44,7 @@
  * ```
  */
 
-// React hooks
+// React hooks - Anonymous (passkey) auth
 export {
   AnonAuthProvider,
   useAnonAuth,
@@ -45,6 +54,19 @@ export {
   type AnonAuthContextValue,
   type RecoveryActions,
 } from './hooks/useAnonAuth.js';
+
+// React hooks - OAuth auth
+export {
+  OAuthProvider,
+  useOAuth,
+  useOAuthCallback,
+  type OAuthProviderProps,
+  type OAuthState,
+  type OAuthActions,
+  type OAuthContextValue,
+  type OAuthProviders,
+  type OAuthUser,
+} from './hooks/useOAuth.js';
 
 // API client (for non-React usage)
 export {

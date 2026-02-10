@@ -6,6 +6,9 @@ import type {
   DatabaseAdapter,
   AnonUser,
   CreateUserInput,
+  OAuthUser,
+  CreateOAuthUserInput,
+  OAuthProvider,
   Session,
   CreateSessionInput,
   Passkey,
@@ -24,7 +27,7 @@ export interface PostgresConfig {
  * SQL schema for near-anon-auth tables
  */
 export const POSTGRES_SCHEMA = `
--- Anonymous users
+-- Anonymous users (HUMINT sources - passkey only)
 CREATE TABLE IF NOT EXISTS anon_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   codename TEXT UNIQUE NOT NULL,
@@ -35,7 +38,33 @@ CREATE TABLE IF NOT EXISTS anon_users (
   last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Passkeys (WebAuthn credentials)
+-- OAuth users (standard users - OAuth providers)
+CREATE TABLE IF NOT EXISTS oauth_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  avatar_url TEXT,
+  near_account_id TEXT UNIQUE NOT NULL,
+  mpc_public_key TEXT NOT NULL,
+  derivation_path TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- OAuth provider connections
+CREATE TABLE IF NOT EXISTS oauth_providers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES oauth_users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  email TEXT,
+  name TEXT,
+  avatar_url TEXT,
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(provider, provider_id)
+);
+
+-- Passkeys (WebAuthn credentials) - for anonymous users
 CREATE TABLE IF NOT EXISTS anon_passkeys (
   credential_id TEXT PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
@@ -47,10 +76,11 @@ CREATE TABLE IF NOT EXISTS anon_passkeys (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Sessions
+-- Sessions (works for both user types)
 CREATE TABLE IF NOT EXISTS anon_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  user_type TEXT NOT NULL DEFAULT 'anonymous',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL,
   last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -63,15 +93,16 @@ CREATE TABLE IF NOT EXISTS anon_challenges (
   id UUID PRIMARY KEY,
   challenge TEXT NOT NULL,
   type TEXT NOT NULL,
-  user_id UUID REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID,
   expires_at TIMESTAMPTZ NOT NULL,
   metadata JSONB
 );
 
--- Recovery data references
+-- Recovery data references (works for both user types)
 CREATE TABLE IF NOT EXISTS anon_recovery (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  user_type TEXT NOT NULL DEFAULT 'anonymous',
   type TEXT NOT NULL,
   reference TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -83,6 +114,9 @@ CREATE INDEX IF NOT EXISTS idx_anon_sessions_user ON anon_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_anon_sessions_expires ON anon_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_anon_passkeys_user ON anon_passkeys(user_id);
 CREATE INDEX IF NOT EXISTS idx_anon_challenges_expires ON anon_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_users_email ON oauth_users(email);
+CREATE INDEX IF NOT EXISTS idx_oauth_providers_user ON oauth_providers(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_providers_lookup ON oauth_providers(provider, provider_id);
 `;
 
 /**
@@ -141,6 +175,7 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: 'anonymous',
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -162,6 +197,7 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: 'anonymous',
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -183,6 +219,7 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: 'anonymous',
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -190,6 +227,179 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
         createdAt: row.created_at,
         lastActiveAt: row.last_active_at,
       };
+    },
+
+    // ============================================
+    // OAuth Users
+    // ============================================
+
+    async createOAuthUser(input: CreateOAuthUserInput): Promise<OAuthUser> {
+      const p = await getPool();
+      const client = await p.connect();
+      
+      try {
+        await client.query('BEGIN');
+        
+        // Create user
+        const userResult = await client.query(
+          `INSERT INTO oauth_users (email, name, avatar_url, near_account_id, mpc_public_key, derivation_path)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [input.email, input.name, input.avatarUrl, input.nearAccountId, input.mpcPublicKey, input.derivationPath]
+        );
+        
+        const userRow = userResult.rows[0];
+        
+        // Create provider connection
+        await client.query(
+          `INSERT INTO oauth_providers (user_id, provider, provider_id, email, name, avatar_url)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            userRow.id,
+            input.provider.provider,
+            input.provider.providerId,
+            input.provider.email,
+            input.provider.name,
+            input.provider.avatarUrl,
+          ]
+        );
+        
+        await client.query('COMMIT');
+        
+        return {
+          id: userRow.id,
+          type: 'standard',
+          email: userRow.email,
+          name: userRow.name,
+          avatarUrl: userRow.avatar_url,
+          nearAccountId: userRow.near_account_id,
+          mpcPublicKey: userRow.mpc_public_key,
+          derivationPath: userRow.derivation_path,
+          providers: [input.provider],
+          createdAt: userRow.created_at,
+          lastActiveAt: userRow.last_active_at,
+        };
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async getOAuthUserById(id: string): Promise<OAuthUser | null> {
+      const p = await getPool();
+      const userResult = await p.query(
+        'SELECT * FROM oauth_users WHERE id = $1',
+        [id]
+      );
+      
+      if (userResult.rows.length === 0) return null;
+      
+      const userRow = userResult.rows[0];
+      
+      // Get providers
+      const providersResult = await p.query(
+        'SELECT * FROM oauth_providers WHERE user_id = $1',
+        [id]
+      );
+      
+      const providers: OAuthProvider[] = providersResult.rows.map((row: Record<string, unknown>) => ({
+        provider: row.provider as 'google' | 'github' | 'twitter',
+        providerId: row.provider_id as string,
+        email: row.email as string | undefined,
+        name: row.name as string | undefined,
+        avatarUrl: row.avatar_url as string | undefined,
+        connectedAt: row.connected_at as Date,
+      }));
+      
+      return {
+        id: userRow.id,
+        type: 'standard',
+        email: userRow.email,
+        name: userRow.name,
+        avatarUrl: userRow.avatar_url,
+        nearAccountId: userRow.near_account_id,
+        mpcPublicKey: userRow.mpc_public_key,
+        derivationPath: userRow.derivation_path,
+        providers,
+        createdAt: userRow.created_at,
+        lastActiveAt: userRow.last_active_at,
+      };
+    },
+
+    async getOAuthUserByEmail(email: string): Promise<OAuthUser | null> {
+      const p = await getPool();
+      const userResult = await p.query(
+        'SELECT * FROM oauth_users WHERE email = $1',
+        [email]
+      );
+      
+      if (userResult.rows.length === 0) return null;
+      
+      const userRow = userResult.rows[0];
+      
+      // Get providers
+      const providersResult = await p.query(
+        'SELECT * FROM oauth_providers WHERE user_id = $1',
+        [userRow.id]
+      );
+      
+      const providers: OAuthProvider[] = providersResult.rows.map((row: Record<string, unknown>) => ({
+        provider: row.provider as 'google' | 'github' | 'twitter',
+        providerId: row.provider_id as string,
+        email: row.email as string | undefined,
+        name: row.name as string | undefined,
+        avatarUrl: row.avatar_url as string | undefined,
+        connectedAt: row.connected_at as Date,
+      }));
+      
+      return {
+        id: userRow.id,
+        type: 'standard',
+        email: userRow.email,
+        name: userRow.name,
+        avatarUrl: userRow.avatar_url,
+        nearAccountId: userRow.near_account_id,
+        mpcPublicKey: userRow.mpc_public_key,
+        derivationPath: userRow.derivation_path,
+        providers,
+        createdAt: userRow.created_at,
+        lastActiveAt: userRow.last_active_at,
+      };
+    },
+
+    async getOAuthUserByProvider(provider: string, providerId: string): Promise<OAuthUser | null> {
+      const p = await getPool();
+      const providerResult = await p.query(
+        'SELECT user_id FROM oauth_providers WHERE provider = $1 AND provider_id = $2',
+        [provider, providerId]
+      );
+      
+      if (providerResult.rows.length === 0) return null;
+      
+      const userId = providerResult.rows[0].user_id;
+      return this.getOAuthUserById(userId);
+    },
+
+    async linkOAuthProvider(userId: string, provider: OAuthProvider): Promise<void> {
+      const p = await getPool();
+      await p.query(
+        `INSERT INTO oauth_providers (user_id, provider, provider_id, email, name, avatar_url)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (provider, provider_id) DO UPDATE SET
+           email = EXCLUDED.email,
+           name = EXCLUDED.name,
+           avatar_url = EXCLUDED.avatar_url`,
+        [
+          userId,
+          provider.provider,
+          provider.providerId,
+          provider.email,
+          provider.name,
+          provider.avatarUrl,
+        ]
+      );
     },
 
     async createPasskey(input: CreatePasskeyInput): Promise<Passkey> {

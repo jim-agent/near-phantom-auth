@@ -34,6 +34,32 @@ export interface AnonAuthConfig {
     /** Origin for WebAuthn (e.g., https://example.com) */
     origin: string;
   };
+  
+  /** OAuth provider configuration */
+  oauth?: OAuthConfig;
+}
+
+export interface OAuthConfig {
+  /** OAuth callback base URL (e.g., https://myapp.com/auth/callback) */
+  callbackBaseUrl: string;
+  
+  /** Google OAuth */
+  google?: {
+    clientId: string;
+    clientSecret: string;
+  };
+  
+  /** GitHub OAuth */
+  github?: {
+    clientId: string;
+    clientSecret: string;
+  };
+  
+  /** X (Twitter) OAuth */
+  twitter?: {
+    clientId: string;
+    clientSecret: string;
+  };
 }
 
 export interface DatabaseConfig {
@@ -79,6 +105,13 @@ export interface DatabaseAdapter {
   getUserByCodename(codename: string): Promise<AnonUser | null>;
   getUserByNearAccount(nearAccountId: string): Promise<AnonUser | null>;
   
+  // OAuth Users (standard users with OAuth)
+  createOAuthUser(user: CreateOAuthUserInput): Promise<OAuthUser>;
+  getOAuthUserById(id: string): Promise<OAuthUser | null>;
+  getOAuthUserByEmail(email: string): Promise<OAuthUser | null>;
+  getOAuthUserByProvider(provider: string, providerId: string): Promise<OAuthUser | null>;
+  linkOAuthProvider(userId: string, provider: OAuthProvider): Promise<void>;
+  
   // Passkeys
   createPasskey(passkey: CreatePasskeyInput): Promise<Passkey>;
   getPasskeyById(credentialId: string): Promise<Passkey | null>;
@@ -104,11 +137,20 @@ export interface DatabaseAdapter {
 }
 
 // ============================================
-// User & Session
+// User Types
 // ============================================
 
+/**
+ * User type enumeration
+ */
+export type UserType = 'anonymous' | 'standard';
+
+/**
+ * Anonymous user (HUMINT sources) - passkey only, no PII
+ */
 export interface AnonUser {
   id: string;
+  type: 'anonymous';
   codename: string;
   nearAccountId: string;
   mpcPublicKey: string;
@@ -123,6 +165,54 @@ export interface CreateUserInput {
   mpcPublicKey: string;
   derivationPath: string;
 }
+
+/**
+ * OAuth provider connection
+ */
+export interface OAuthProvider {
+  provider: 'google' | 'github' | 'twitter';
+  providerId: string;
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+  connectedAt: Date;
+}
+
+/**
+ * Standard user (OAuth/email) - full access, has PII
+ */
+export interface OAuthUser {
+  id: string;
+  type: 'standard';
+  email: string;
+  name?: string;
+  avatarUrl?: string;
+  nearAccountId: string;
+  mpcPublicKey: string;
+  derivationPath: string;
+  providers: OAuthProvider[];
+  createdAt: Date;
+  lastActiveAt: Date;
+}
+
+export interface CreateOAuthUserInput {
+  email: string;
+  name?: string;
+  avatarUrl?: string;
+  nearAccountId: string;
+  mpcPublicKey: string;
+  derivationPath: string;
+  provider: OAuthProvider;
+}
+
+/**
+ * Union type for any user
+ */
+export type User = AnonUser | OAuthUser;
+
+// ============================================
+// Session
+// ============================================
 
 export interface Session {
   id: string;

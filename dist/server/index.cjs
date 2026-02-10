@@ -14,7 +14,7 @@ var bs58__default = /*#__PURE__*/_interopDefault(bs58);
 
 // src/server/db/adapters/postgres.ts
 var POSTGRES_SCHEMA = `
--- Anonymous users
+-- Anonymous users (HUMINT sources - passkey only)
 CREATE TABLE IF NOT EXISTS anon_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   codename TEXT UNIQUE NOT NULL,
@@ -25,7 +25,33 @@ CREATE TABLE IF NOT EXISTS anon_users (
   last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Passkeys (WebAuthn credentials)
+-- OAuth users (standard users - OAuth providers)
+CREATE TABLE IF NOT EXISTS oauth_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  avatar_url TEXT,
+  near_account_id TEXT UNIQUE NOT NULL,
+  mpc_public_key TEXT NOT NULL,
+  derivation_path TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- OAuth provider connections
+CREATE TABLE IF NOT EXISTS oauth_providers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES oauth_users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  email TEXT,
+  name TEXT,
+  avatar_url TEXT,
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(provider, provider_id)
+);
+
+-- Passkeys (WebAuthn credentials) - for anonymous users
 CREATE TABLE IF NOT EXISTS anon_passkeys (
   credential_id TEXT PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
@@ -37,10 +63,11 @@ CREATE TABLE IF NOT EXISTS anon_passkeys (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Sessions
+-- Sessions (works for both user types)
 CREATE TABLE IF NOT EXISTS anon_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  user_type TEXT NOT NULL DEFAULT 'anonymous',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL,
   last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -53,15 +80,16 @@ CREATE TABLE IF NOT EXISTS anon_challenges (
   id UUID PRIMARY KEY,
   challenge TEXT NOT NULL,
   type TEXT NOT NULL,
-  user_id UUID REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID,
   expires_at TIMESTAMPTZ NOT NULL,
   metadata JSONB
 );
 
--- Recovery data references
+-- Recovery data references (works for both user types)
 CREATE TABLE IF NOT EXISTS anon_recovery (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES anon_users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  user_type TEXT NOT NULL DEFAULT 'anonymous',
   type TEXT NOT NULL,
   reference TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -73,6 +101,9 @@ CREATE INDEX IF NOT EXISTS idx_anon_sessions_user ON anon_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_anon_sessions_expires ON anon_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_anon_passkeys_user ON anon_passkeys(user_id);
 CREATE INDEX IF NOT EXISTS idx_anon_challenges_expires ON anon_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_users_email ON oauth_users(email);
+CREATE INDEX IF NOT EXISTS idx_oauth_providers_user ON oauth_providers(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_providers_lookup ON oauth_providers(provider, provider_id);
 `;
 function createPostgresAdapter(config) {
   let pool = null;
@@ -117,6 +148,7 @@ function createPostgresAdapter(config) {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: "anonymous",
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -135,6 +167,7 @@ function createPostgresAdapter(config) {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: "anonymous",
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -153,6 +186,7 @@ function createPostgresAdapter(config) {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: "anonymous",
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -160,6 +194,151 @@ function createPostgresAdapter(config) {
         createdAt: row.created_at,
         lastActiveAt: row.last_active_at
       };
+    },
+    // ============================================
+    // OAuth Users
+    // ============================================
+    async createOAuthUser(input) {
+      const p = await getPool();
+      const client = await p.connect();
+      try {
+        await client.query("BEGIN");
+        const userResult = await client.query(
+          `INSERT INTO oauth_users (email, name, avatar_url, near_account_id, mpc_public_key, derivation_path)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [input.email, input.name, input.avatarUrl, input.nearAccountId, input.mpcPublicKey, input.derivationPath]
+        );
+        const userRow = userResult.rows[0];
+        await client.query(
+          `INSERT INTO oauth_providers (user_id, provider, provider_id, email, name, avatar_url)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            userRow.id,
+            input.provider.provider,
+            input.provider.providerId,
+            input.provider.email,
+            input.provider.name,
+            input.provider.avatarUrl
+          ]
+        );
+        await client.query("COMMIT");
+        return {
+          id: userRow.id,
+          type: "standard",
+          email: userRow.email,
+          name: userRow.name,
+          avatarUrl: userRow.avatar_url,
+          nearAccountId: userRow.near_account_id,
+          mpcPublicKey: userRow.mpc_public_key,
+          derivationPath: userRow.derivation_path,
+          providers: [input.provider],
+          createdAt: userRow.created_at,
+          lastActiveAt: userRow.last_active_at
+        };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async getOAuthUserById(id) {
+      const p = await getPool();
+      const userResult = await p.query(
+        "SELECT * FROM oauth_users WHERE id = $1",
+        [id]
+      );
+      if (userResult.rows.length === 0) return null;
+      const userRow = userResult.rows[0];
+      const providersResult = await p.query(
+        "SELECT * FROM oauth_providers WHERE user_id = $1",
+        [id]
+      );
+      const providers = providersResult.rows.map((row) => ({
+        provider: row.provider,
+        providerId: row.provider_id,
+        email: row.email,
+        name: row.name,
+        avatarUrl: row.avatar_url,
+        connectedAt: row.connected_at
+      }));
+      return {
+        id: userRow.id,
+        type: "standard",
+        email: userRow.email,
+        name: userRow.name,
+        avatarUrl: userRow.avatar_url,
+        nearAccountId: userRow.near_account_id,
+        mpcPublicKey: userRow.mpc_public_key,
+        derivationPath: userRow.derivation_path,
+        providers,
+        createdAt: userRow.created_at,
+        lastActiveAt: userRow.last_active_at
+      };
+    },
+    async getOAuthUserByEmail(email) {
+      const p = await getPool();
+      const userResult = await p.query(
+        "SELECT * FROM oauth_users WHERE email = $1",
+        [email]
+      );
+      if (userResult.rows.length === 0) return null;
+      const userRow = userResult.rows[0];
+      const providersResult = await p.query(
+        "SELECT * FROM oauth_providers WHERE user_id = $1",
+        [userRow.id]
+      );
+      const providers = providersResult.rows.map((row) => ({
+        provider: row.provider,
+        providerId: row.provider_id,
+        email: row.email,
+        name: row.name,
+        avatarUrl: row.avatar_url,
+        connectedAt: row.connected_at
+      }));
+      return {
+        id: userRow.id,
+        type: "standard",
+        email: userRow.email,
+        name: userRow.name,
+        avatarUrl: userRow.avatar_url,
+        nearAccountId: userRow.near_account_id,
+        mpcPublicKey: userRow.mpc_public_key,
+        derivationPath: userRow.derivation_path,
+        providers,
+        createdAt: userRow.created_at,
+        lastActiveAt: userRow.last_active_at
+      };
+    },
+    async getOAuthUserByProvider(provider, providerId) {
+      const p = await getPool();
+      const providerResult = await p.query(
+        "SELECT user_id FROM oauth_providers WHERE provider = $1 AND provider_id = $2",
+        [provider, providerId]
+      );
+      if (providerResult.rows.length === 0) return null;
+      const userId = providerResult.rows[0].user_id;
+      return this.getOAuthUserById(userId);
+    },
+    async linkOAuthProvider(userId, provider) {
+      const p = await getPool();
+      await p.query(
+        `INSERT INTO oauth_providers (user_id, provider, provider_id, email, name, avatar_url)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (provider, provider_id) DO UPDATE SET
+           email = EXCLUDED.email,
+           name = EXCLUDED.name,
+           avatar_url = EXCLUDED.avatar_url`,
+        [
+          userId,
+          provider.provider,
+          provider.providerId,
+          provider.email,
+          provider.name,
+          provider.avatarUrl
+        ]
+      );
     },
     async createPasskey(input) {
       const p = await getPool();
@@ -1099,6 +1278,469 @@ function createIPFSRecoveryManager(config) {
     }
   };
 }
+function generatePKCE() {
+  const codeVerifier = crypto$1.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto$1.createHash("sha256").update(codeVerifier).digest("base64url");
+  return { codeVerifier, codeChallenge };
+}
+function generateState() {
+  return crypto$1.randomBytes(32).toString("base64url");
+}
+function createOAuthManager(config, db) {
+  const stateStore = /* @__PURE__ */ new Map();
+  return {
+    isConfigured(provider) {
+      return !!config[provider]?.clientId;
+    },
+    async getAuthUrl(provider, redirectUri) {
+      const providerConfig = config[provider];
+      if (!providerConfig) {
+        throw new Error(`Provider ${provider} not configured`);
+      }
+      const state = generateState();
+      const { codeVerifier, codeChallenge } = generatePKCE();
+      let url;
+      const { clientId } = providerConfig;
+      switch (provider) {
+        case "google": {
+          const params = new URLSearchParams({
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            response_type: "code",
+            scope: "openid email profile",
+            state,
+            code_challenge: codeChallenge,
+            code_challenge_method: "S256",
+            access_type: "offline",
+            prompt: "consent"
+          });
+          url = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+          break;
+        }
+        case "github": {
+          const params = new URLSearchParams({
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            scope: "read:user user:email",
+            state
+          });
+          url = `https://github.com/login/oauth/authorize?${params}`;
+          break;
+        }
+        case "twitter": {
+          const params = new URLSearchParams({
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            response_type: "code",
+            scope: "tweet.read users.read offline.access",
+            state,
+            code_challenge: codeChallenge,
+            code_challenge_method: "S256"
+          });
+          url = `https://twitter.com/i/oauth2/authorize?${params}`;
+          break;
+        }
+        default:
+          throw new Error(`Unknown provider: ${provider}`);
+      }
+      const oauthState = {
+        provider,
+        state,
+        codeVerifier,
+        redirectUri,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1e3)
+        // 10 minutes
+      };
+      stateStore.set(state, oauthState);
+      for (const [key, value] of stateStore.entries()) {
+        if (value.expiresAt < /* @__PURE__ */ new Date()) {
+          stateStore.delete(key);
+        }
+      }
+      return { url, state, codeVerifier };
+    },
+    async exchangeCode(provider, code, redirectUri, codeVerifier) {
+      const providerConfig = config[provider];
+      if (!providerConfig) {
+        throw new Error(`Provider ${provider} not configured`);
+      }
+      const { clientId, clientSecret } = providerConfig;
+      let tokenUrl;
+      let body;
+      switch (provider) {
+        case "google": {
+          tokenUrl = "https://oauth2.googleapis.com/token";
+          body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+            code_verifier: codeVerifier || ""
+          });
+          break;
+        }
+        case "github": {
+          tokenUrl = "https://github.com/login/oauth/access_token";
+          body = new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            code,
+            redirect_uri: redirectUri
+          });
+          break;
+        }
+        case "twitter": {
+          tokenUrl = "https://api.twitter.com/2/oauth2/token";
+          body = new URLSearchParams({
+            client_id: clientId,
+            code,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+            code_verifier: codeVerifier || ""
+          });
+          break;
+        }
+        default:
+          throw new Error(`Unknown provider: ${provider}`);
+      }
+      const headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      };
+      if (provider === "twitter") {
+        const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+        headers["Authorization"] = `Basic ${credentials}`;
+      }
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers,
+        body
+      });
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Token exchange failed: ${error}`);
+      }
+      const data = await response.json();
+      return {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+        expiresIn: data.expires_in || 3600,
+        tokenType: data.token_type || "Bearer"
+      };
+    },
+    async getProfile(provider, accessToken) {
+      let profileUrl;
+      const headers = {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json"
+      };
+      switch (provider) {
+        case "google":
+          profileUrl = "https://www.googleapis.com/oauth2/v2/userinfo";
+          break;
+        case "github":
+          profileUrl = "https://api.github.com/user";
+          break;
+        case "twitter":
+          profileUrl = "https://api.twitter.com/2/users/me?user.fields=profile_image_url";
+          break;
+        default:
+          throw new Error(`Unknown provider: ${provider}`);
+      }
+      const response = await fetch(profileUrl, { headers });
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Profile fetch failed: ${error}`);
+      }
+      const data = await response.json();
+      switch (provider) {
+        case "google":
+          return {
+            provider,
+            providerId: String(data.id),
+            email: data.email,
+            name: data.name,
+            avatarUrl: data.picture,
+            raw: data
+          };
+        case "github": {
+          let email = data.email;
+          if (!email) {
+            try {
+              const emailResponse = await fetch("https://api.github.com/user/emails", { headers });
+              if (emailResponse.ok) {
+                const emails = await emailResponse.json();
+                const primary = emails.find((e) => e.primary && e.verified);
+                email = primary?.email;
+              }
+            } catch {
+            }
+          }
+          return {
+            provider,
+            providerId: String(data.id),
+            email,
+            name: data.name || data.login,
+            avatarUrl: data.avatar_url,
+            raw: data
+          };
+        }
+        case "twitter": {
+          const twitterData = data.data;
+          return {
+            provider,
+            providerId: String(twitterData.id),
+            email: void 0,
+            // Twitter doesn't provide email
+            name: twitterData.name,
+            avatarUrl: twitterData.profile_image_url,
+            raw: data
+          };
+        }
+        default:
+          throw new Error(`Unknown provider: ${provider}`);
+      }
+    },
+    async validateState(state) {
+      const oauthState = stateStore.get(state);
+      if (!oauthState) {
+        return null;
+      }
+      if (oauthState.expiresAt < /* @__PURE__ */ new Date()) {
+        stateStore.delete(state);
+        return null;
+      }
+      stateStore.delete(state);
+      return oauthState;
+    }
+  };
+}
+function createOAuthRouter(config) {
+  const router = express.Router();
+  const {
+    db,
+    sessionManager,
+    mpcManager,
+    oauthConfig,
+    ipfsRecovery
+  } = config;
+  const oauthManager = createOAuthManager(
+    {
+      google: oauthConfig.google,
+      github: oauthConfig.github,
+      twitter: oauthConfig.twitter
+    });
+  router.use(express.json());
+  router.get("/providers", (_req, res) => {
+    res.json({
+      providers: {
+        google: oauthManager.isConfigured("google"),
+        github: oauthManager.isConfigured("github"),
+        twitter: oauthManager.isConfigured("twitter")
+      }
+    });
+  });
+  router.get("/:provider/start", async (req, res) => {
+    try {
+      const provider = req.params.provider;
+      if (!["google", "github", "twitter"].includes(provider)) {
+        return res.status(400).json({ error: "Invalid provider" });
+      }
+      if (!oauthManager.isConfigured(provider)) {
+        return res.status(400).json({ error: `${provider} OAuth not configured` });
+      }
+      const redirectUri = `${oauthConfig.callbackBaseUrl}/${provider}`;
+      const { url, state, codeVerifier } = await oauthManager.getAuthUrl(provider, redirectUri);
+      if (codeVerifier) {
+        res.cookie("oauth_code_verifier", codeVerifier, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+          maxAge: 10 * 60 * 1e3
+          // 10 minutes
+        });
+      }
+      res.cookie("oauth_state", state, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 10 * 60 * 1e3
+      });
+      res.json({ url, state });
+    } catch (error) {
+      console.error("[OAuth] Start error:", error);
+      res.status(500).json({ error: "Failed to start OAuth flow" });
+    }
+  });
+  router.post("/:provider/callback", async (req, res) => {
+    try {
+      const provider = req.params.provider;
+      const { code, state } = req.body;
+      if (!code || !state) {
+        return res.status(400).json({ error: "Missing code or state" });
+      }
+      const storedState = req.cookies?.oauth_state;
+      if (state !== storedState) {
+        return res.status(400).json({ error: "Invalid state" });
+      }
+      const codeVerifier = req.cookies?.oauth_code_verifier;
+      res.clearCookie("oauth_state");
+      res.clearCookie("oauth_code_verifier");
+      const redirectUri = `${oauthConfig.callbackBaseUrl}/${provider}`;
+      const tokens = await oauthManager.exchangeCode(provider, code, redirectUri, codeVerifier);
+      const profile = await oauthManager.getProfile(provider, tokens.accessToken);
+      let user = await db.getOAuthUserByProvider(provider, profile.providerId);
+      if (user) {
+        await sessionManager.createSession(user.id, res, {
+          ipAddress: req.ip,
+          userAgent: req.headers["user-agent"]
+        });
+        return res.json({
+          success: true,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            avatarUrl: user.avatarUrl,
+            nearAccountId: user.nearAccountId,
+            type: "standard"
+          },
+          isNewUser: false
+        });
+      }
+      if (profile.email) {
+        user = await db.getOAuthUserByEmail(profile.email);
+        if (user) {
+          const providerData2 = {
+            provider,
+            providerId: profile.providerId,
+            email: profile.email,
+            name: profile.name,
+            avatarUrl: profile.avatarUrl,
+            connectedAt: /* @__PURE__ */ new Date()
+          };
+          await db.linkOAuthProvider(user.id, providerData2);
+          await sessionManager.createSession(user.id, res, {
+            ipAddress: req.ip,
+            userAgent: req.headers["user-agent"]
+          });
+          return res.json({
+            success: true,
+            user: {
+              id: user.id,
+              email: user.email,
+              name: user.name,
+              avatarUrl: user.avatarUrl,
+              nearAccountId: user.nearAccountId,
+              type: "standard"
+            },
+            isNewUser: false,
+            linkedProvider: provider
+          });
+        }
+      }
+      const tempUserId = crypto.randomUUID();
+      const mpcAccount = await mpcManager.createAccount(tempUserId);
+      const providerData = {
+        provider,
+        providerId: profile.providerId,
+        email: profile.email,
+        name: profile.name,
+        avatarUrl: profile.avatarUrl,
+        connectedAt: /* @__PURE__ */ new Date()
+      };
+      const newUser = await db.createOAuthUser({
+        email: profile.email || `${profile.providerId}@${provider}.oauth`,
+        name: profile.name,
+        avatarUrl: profile.avatarUrl,
+        nearAccountId: mpcAccount.nearAccountId,
+        mpcPublicKey: mpcAccount.mpcPublicKey,
+        derivationPath: mpcAccount.derivationPath,
+        provider: providerData
+      });
+      if (ipfsRecovery && profile.email) {
+        try {
+          const recoveryPassword = crypto.randomUUID();
+          const { cid } = await ipfsRecovery.createRecoveryBackup(
+            {
+              userId: newUser.id,
+              nearAccountId: newUser.nearAccountId,
+              derivationPath: newUser.derivationPath,
+              createdAt: Date.now()
+            },
+            recoveryPassword
+          );
+          await db.storeRecoveryData({
+            userId: newUser.id,
+            type: "ipfs",
+            reference: cid,
+            createdAt: /* @__PURE__ */ new Date()
+          });
+          console.log("[OAuth] Recovery backup created for new user:", cid);
+        } catch (error) {
+          console.error("[OAuth] Failed to create recovery backup:", error);
+        }
+      }
+      await sessionManager.createSession(newUser.id, res, {
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"]
+      });
+      res.json({
+        success: true,
+        user: {
+          id: newUser.id,
+          email: newUser.email,
+          name: newUser.name,
+          avatarUrl: newUser.avatarUrl,
+          nearAccountId: newUser.nearAccountId,
+          type: "standard"
+        },
+        isNewUser: true
+      });
+    } catch (error) {
+      console.error("[OAuth] Callback error:", error);
+      res.status(500).json({ error: "OAuth authentication failed" });
+    }
+  });
+  router.post("/:provider/link", async (req, res) => {
+    try {
+      const session = await sessionManager.getSession(req);
+      if (!session) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      const provider = req.params.provider;
+      const { code, state, codeVerifier } = req.body;
+      if (!code) {
+        return res.status(400).json({ error: "Missing code" });
+      }
+      const redirectUri = `${oauthConfig.callbackBaseUrl}/${provider}`;
+      const tokens = await oauthManager.exchangeCode(provider, code, redirectUri, codeVerifier);
+      const profile = await oauthManager.getProfile(provider, tokens.accessToken);
+      const existingUser = await db.getOAuthUserByProvider(provider, profile.providerId);
+      if (existingUser && existingUser.id !== session.userId) {
+        return res.status(400).json({ error: "This account is already linked to another user" });
+      }
+      const providerData = {
+        provider,
+        providerId: profile.providerId,
+        email: profile.email,
+        name: profile.name,
+        avatarUrl: profile.avatarUrl,
+        connectedAt: /* @__PURE__ */ new Date()
+      };
+      await db.linkOAuthProvider(session.userId, providerData);
+      res.json({
+        success: true,
+        message: `${provider} account linked successfully`
+      });
+    } catch (error) {
+      console.error("[OAuth] Link error:", error);
+      res.status(500).json({ error: "Failed to link provider" });
+    }
+  });
+  return router;
+}
 
 // src/server/middleware.ts
 function createAuthMiddleware(sessionManager, db) {
@@ -1651,6 +2293,23 @@ function createAnonAuth(config) {
   if (config.recovery?.ipfs) {
     ipfsRecovery = createIPFSRecoveryManager(config.recovery.ipfs);
   }
+  let oauthManager;
+  let oauthRouter;
+  if (config.oauth) {
+    oauthManager = createOAuthManager(
+      {
+        google: config.oauth.google,
+        github: config.oauth.github,
+        twitter: config.oauth.twitter
+      });
+    oauthRouter = createOAuthRouter({
+      db,
+      sessionManager,
+      mpcManager,
+      oauthConfig: config.oauth,
+      ipfsRecovery
+    });
+  }
   const middleware = createAuthMiddleware(sessionManager, db);
   const requireAuth = createRequireAuth(sessionManager, db);
   const router = createRouter({
@@ -1664,6 +2323,7 @@ function createAnonAuth(config) {
   });
   return {
     router,
+    oauthRouter,
     middleware,
     requireAuth,
     async initialize() {
@@ -1674,12 +2334,15 @@ function createAnonAuth(config) {
     passkeyManager,
     mpcManager,
     walletRecovery,
-    ipfsRecovery
+    ipfsRecovery,
+    oauthManager
   };
 }
 
 exports.POSTGRES_SCHEMA = POSTGRES_SCHEMA;
 exports.createAnonAuth = createAnonAuth;
+exports.createOAuthManager = createOAuthManager;
+exports.createOAuthRouter = createOAuthRouter;
 exports.createPostgresAdapter = createPostgresAdapter;
 exports.generateCodename = generateCodename;
 exports.isValidCodename = isValidCodename;
