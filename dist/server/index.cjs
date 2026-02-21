@@ -642,9 +642,10 @@ function createPasskeyManager(db, config) {
         excludeCredentials: [],
         // No existing passkeys for new user
         authenticatorSelection: {
-          residentKey: "preferred",
-          userVerification: "preferred",
-          authenticatorAttachment: "platform"
+          residentKey: "required",
+          // Required for discoverable credentials (login without username)
+          userVerification: "preferred"
+          // Note: removed authenticatorAttachment to allow both platform and cross-platform (hardware keys)
         }
       });
       const challengeId = crypto$1.randomUUID();
