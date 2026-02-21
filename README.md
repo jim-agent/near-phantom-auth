@@ -20,6 +20,12 @@ Anonymous passkey authentication with NEAR MPC accounts and decentralized recove
 npm install @vitalpoint/near-phantom-auth
 ```
 
+The package provides both server and client exports:
+- `@vitalpoint/near-phantom-auth/server` - Express router, session management, MPC accounts
+- `@vitalpoint/near-phantom-auth/client` - React hooks, WebAuthn helpers, API client
+
+Both are included in the single package - no separate installs needed.
+
 ## Quick Start
 
 ### Server (Express)
@@ -87,19 +93,30 @@ function AuthDemo() {
     isLoading, 
     isAuthenticated, 
     codename, 
+    nearAccountId,
+    webAuthnSupported,
     register, 
     login, 
     logout,
     error,
+    clearError,
   } = useAnonAuth();
 
   if (isLoading) return <div>Loading...</div>;
+
+  if (!webAuthnSupported) {
+    return <div>Your browser doesn't support passkeys.</div>;
+  }
 
   if (!isAuthenticated) {
     return (
       <div>
         <h1>Anonymous Auth Demo</h1>
-        {error && <p style={{ color: 'red' }}>{error}</p>}
+        {error && (
+          <p style={{ color: 'red' }}>
+            {error} <button onClick={clearError}>×</button>
+          </p>
+        )}
         <button onClick={register}>Register (Create Identity)</button>
         <button onClick={() => login()}>Sign In (Existing Identity)</button>
       </div>
@@ -109,10 +126,48 @@ function AuthDemo() {
   return (
     <div>
       <h1>Welcome, {codename}</h1>
-      <p>You are authenticated anonymously.</p>
+      <p>NEAR Account: {nearAccountId}</p>
       <button onClick={logout}>Sign Out</button>
     </div>
   );
+}
+```
+
+> ⚠️ **Important**: Always use the client library's `register` and `login` functions rather than implementing WebAuthn manually. WebAuthn uses base64url encoding (not standard base64), and the client library handles this correctly.
+
+### Client (Vanilla JS / Non-React)
+
+For non-React applications, use the lower-level functions:
+
+```typescript
+import { 
+  createApiClient, 
+  createPasskey, 
+  authenticateWithPasskey,
+  isWebAuthnSupported 
+} from '@vitalpoint/near-phantom-auth/client';
+
+const api = createApiClient({ baseUrl: '/auth' });
+
+// Check support
+if (!isWebAuthnSupported()) {
+  console.error('WebAuthn not supported');
+}
+
+// Register
+async function register() {
+  const { challengeId, options, tempUserId, codename } = await api.startRegistration();
+  const credential = await createPasskey(options); // Handles base64url encoding
+  const result = await api.finishRegistration(challengeId, credential, tempUserId, codename);
+  console.log('Registered as:', result.codename);
+}
+
+// Login
+async function login() {
+  const { challengeId, options } = await api.startAuthentication();
+  const credential = await authenticateWithPasskey(options); // Handles base64url encoding
+  const result = await api.finishAuthentication(challengeId, credential);
+  console.log('Logged in as:', result.codename);
 }
 ```
 
@@ -170,6 +225,33 @@ function AuthDemo() {
 
 ## Configuration
 
+### Environment Variables
+
+```bash
+# Required
+SESSION_SECRET=your-secure-session-secret
+DATABASE_URL=postgresql://user:pass@localhost:5432/mydb
+
+# NEAR Network ('testnet' or 'mainnet')
+NEAR_NETWORK=mainnet
+
+# Mainnet: Treasury for auto-funding new accounts
+NEAR_TREASURY_ACCOUNT=your-treasury.near
+NEAR_TREASURY_PRIVATE_KEY=ed25519:5abc123...
+NEAR_FUNDING_AMOUNT=0.01  # optional, default 0.01
+
+# Optional: Recovery via IPFS (Pinata)
+PINATA_API_KEY=your-pinata-key
+PINATA_API_SECRET=your-pinata-secret
+
+# Optional: Recovery via IPFS (Web3.Storage)
+WEB3_STORAGE_TOKEN=your-web3storage-token
+
+# Optional: Recovery via IPFS (Infura)
+INFURA_IPFS_PROJECT_ID=your-project-id
+INFURA_IPFS_PROJECT_SECRET=your-project-secret
+```
+
 ### Database Adapters
 
 Currently supports PostgreSQL. SQLite and custom adapters coming soon.
@@ -218,6 +300,55 @@ recovery: {
   },
 }
 ```
+
+### MPC Account Funding (Mainnet)
+
+On NEAR mainnet, implicit accounts (64-char hex addresses) need initial funding to become active on-chain. Configure a treasury account to auto-fund new user accounts:
+
+```typescript
+const auth = createAnonAuth({
+  nearNetwork: 'mainnet',
+  // ... other config
+  
+  mpc: {
+    // Treasury account that funds new users
+    treasuryAccount: 'your-treasury.near',
+    
+    // Private key (ed25519:BASE58...) - keep secret!
+    treasuryPrivateKey: process.env.NEAR_TREASURY_PRIVATE_KEY,
+    
+    // Amount to send to each new account (default: 0.01 NEAR)
+    fundingAmount: '0.01',
+    
+    // Optional: custom account prefix (default: 'anon')
+    accountPrefix: 'myapp',
+  },
+});
+```
+
+**Environment variables:**
+
+```bash
+# Required for mainnet auto-funding
+NEAR_TREASURY_ACCOUNT=your-treasury.near
+NEAR_TREASURY_PRIVATE_KEY=ed25519:5abc123...
+
+# Optional
+NEAR_FUNDING_AMOUNT=0.01
+```
+
+**How it works:**
+1. New user registers with passkey
+2. System derives deterministic implicit account ID (64-char hex)
+3. Treasury sends 0.01 NEAR to activate the account
+4. User can now receive/send NEAR immediately
+
+**Cost estimation:**
+- ~0.01 NEAR per new user
+- 1 NEAR funds ~100 new accounts
+- Treasury account needs ~0.00182 NEAR minimum balance to stay active
+
+> ⚠️ **Testnet**: On testnet, accounts are auto-created via the NEAR testnet helper API with test tokens. No treasury needed.
 
 ## Security Model
 

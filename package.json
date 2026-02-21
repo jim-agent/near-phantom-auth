@@ -1,6 +1,6 @@
 {
   "name": "@vitalpoint/near-phantom-auth",
-  "version": "0.2.0",
+  "version": "0.2.10",
   "description": "Anonymous passkey authentication with NEAR MPC accounts and decentralized recovery",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,19 +8,19 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./server": {
-      "import": "./dist/server/index.mjs",
-      "require": "./dist/server/index.cjs",
-      "types": "./dist/server/index.d.ts"
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
     },
     "./client": {
-      "import": "./dist/client/index.mjs",
-      "require": "./dist/client/index.cjs",
-      "types": "./dist/client/index.d.ts"
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
     }
   },
   "files": [

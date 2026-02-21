@@ -154,6 +154,7 @@ export function createPostgresAdapter(config: PostgresConfig): DatabaseAdapter {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: 'anonymous' as const,
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,

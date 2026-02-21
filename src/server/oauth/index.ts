@@ -372,4 +372,4 @@ export function createOAuthManager(
   };
 }
 
-export type { OAuthProviderConfig, OAuthProfile, OAuthTokens };
+// Types already exported at interface declaration

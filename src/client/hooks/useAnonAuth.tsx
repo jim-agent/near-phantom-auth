@@ -16,6 +16,7 @@ import {
   authenticateWithPasskey,
   isWebAuthnSupported,
   isPlatformAuthenticatorAvailable,
+  isLikelyCloudSynced,
 } from '../passkey.js';
 
 export interface AnonAuthState {
@@ -35,6 +36,8 @@ export interface AnonAuthState {
   platformAuthAvailable: boolean;
   /** Error from last operation */
   error: string | null;
+  /** Whether the last registered credential appears cloud-synced (privacy warning) */
+  credentialCloudSynced: boolean | null;
 }
 
 export interface AnonAuthActions {
@@ -85,6 +88,7 @@ export function AnonAuthProvider({ apiUrl, children }: AnonAuthProviderProps) {
     webAuthnSupported: false,
     platformAuthAvailable: false,
     error: null,
+    credentialCloudSynced: null,
   });
 
   // Check WebAuthn support on mount
@@ -131,13 +135,16 @@ export function AnonAuthProvider({ apiUrl, children }: AnonAuthProviderProps) {
 
   const register = useCallback(async () => {
     try {
-      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      setState((prev) => ({ ...prev, isLoading: true, error: null, credentialCloudSynced: null }));
       
       // Start registration
       const { challengeId, options, tempUserId, codename } = await api.startRegistration();
       
       // Create passkey
       const credential = await createPasskey(options);
+      
+      // Check if credential appears cloud-synced (privacy warning)
+      const cloudSynced = isLikelyCloudSynced(credential);
       
       // Finish registration
       const result = await api.finishRegistration(
@@ -154,6 +161,7 @@ export function AnonAuthProvider({ apiUrl, children }: AnonAuthProviderProps) {
           isAuthenticated: true,
           codename: result.codename,
           nearAccountId: result.nearAccountId,
+          credentialCloudSynced: cloudSynced,
         }));
       } else {
         throw new Error('Registration failed');

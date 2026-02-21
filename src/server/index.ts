@@ -129,7 +129,10 @@ export function createAnonAuth(config: AnonAuthConfig): AnonAuthInstance {
   // Create MPC manager
   const mpcManager = createMPCManager({
     networkId: config.nearNetwork,
-    accountPrefix: 'anon',
+    accountPrefix: config.mpc?.accountPrefix || 'anon',
+    treasuryAccount: config.mpc?.treasuryAccount,
+    treasuryPrivateKey: config.mpc?.treasuryPrivateKey,
+    fundingAmount: config.mpc?.fundingAmount,
   });
 
   // Create recovery managers

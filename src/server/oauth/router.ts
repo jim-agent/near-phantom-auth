@@ -100,10 +100,10 @@ export function createOAuthRouter(config: OAuthRouterConfig): Router {
         maxAge: 10 * 60 * 1000,
       });
 
-      res.json({ url, state });
+      return res.json({ url, state });
     } catch (error) {
       console.error('[OAuth] Start error:', error);
-      res.status(500).json({ error: 'Failed to start OAuth flow' });
+      return res.status(500).json({ error: 'Failed to start OAuth flow' });
     }
   });
 
@@ -261,7 +261,7 @@ export function createOAuthRouter(config: OAuthRouterConfig): Router {
         userAgent: req.headers['user-agent'],
       });
 
-      res.json({
+      return res.json({
         success: true,
         user: {
           id: newUser.id,
@@ -275,7 +275,7 @@ export function createOAuthRouter(config: OAuthRouterConfig): Router {
       });
     } catch (error) {
       console.error('[OAuth] Callback error:', error);
-      res.status(500).json({ error: 'OAuth authentication failed' });
+      return res.status(500).json({ error: 'OAuth authentication failed' });
     }
   });
 
@@ -326,13 +326,13 @@ export function createOAuthRouter(config: OAuthRouterConfig): Router {
 
       await db.linkOAuthProvider(session.userId, providerData);
 
-      res.json({
+      return res.json({
         success: true,
         message: `${provider} account linked successfully`,
       });
     } catch (error) {
       console.error('[OAuth] Link error:', error);
-      res.status(500).json({ error: 'Failed to link provider' });
+      return res.status(500).json({ error: 'Failed to link provider' });
     }
   });
 

@@ -107,9 +107,9 @@ export function createPasskeyManager(
         attestationType: 'none',
         excludeCredentials: [], // No existing passkeys for new user
         authenticatorSelection: {
-          residentKey: 'preferred',
+          residentKey: 'required',  // Required for discoverable credentials (login without username)
           userVerification: 'preferred',
-          authenticatorAttachment: 'platform',
+          // Note: removed authenticatorAttachment to allow both platform and cross-platform (hardware keys)
         },
       } as GenerateRegistrationOptionsOpts);
       

@@ -7,7 +7,7 @@ export default defineConfig({
     'client/index': 'src/client/index.ts',
   },
   format: ['esm', 'cjs'], // Support both ESM and CJS
-  dts: false, // TODO: Fix type errors and re-enable
+  dts: true, // Generate TypeScript declarations
   clean: true,
   sourcemap: true,
   splitting: false,

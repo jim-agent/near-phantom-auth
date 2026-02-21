@@ -123,6 +123,7 @@ function createPostgresAdapter(config) {
       const row = result.rows[0];
       return {
         id: row.id,
+        type: "anonymous",
         codename: row.codename,
         nearAccountId: row.near_account_id,
         mpcPublicKey: row.mpc_public_key,
@@ -861,14 +862,154 @@ function generateAccountName(userId, prefix) {
   const shortHash = hash.substring(0, 12);
   return `${prefix}-${shortHash}`;
 }
+async function fundAccountFromTreasury(accountId, treasuryAccount, treasuryPrivateKey, amountNear, networkId) {
+  const nacl2 = await import('tweetnacl');
+  const bs582 = await import('bs58');
+  try {
+    const rpcUrl = getRPCUrl(networkId);
+    const keyString = treasuryPrivateKey.replace("ed25519:", "");
+    let secretKey;
+    try {
+      secretKey = bs582.default.decode(keyString);
+    } catch {
+      secretKey = Buffer.from(keyString, "base64");
+    }
+    const publicKey = secretKey.length === 64 ? secretKey.slice(32) : nacl2.default.sign.keyPair.fromSeed(secretKey.slice(0, 32)).publicKey;
+    const publicKeyB58 = bs582.default.encode(Buffer.from(publicKey));
+    const fullPublicKey = `ed25519:${publicKeyB58}`;
+    console.log("[MPC] Treasury public key:", fullPublicKey);
+    const accessKeyResponse = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "get-access-key",
+        method: "query",
+        params: {
+          request_type: "view_access_key",
+          finality: "final",
+          account_id: treasuryAccount,
+          public_key: fullPublicKey
+        }
+      })
+    });
+    const accessKeyResult = await accessKeyResponse.json();
+    if (accessKeyResult.error || !accessKeyResult.result) {
+      console.error("[MPC] Access key error:", accessKeyResult.error);
+      return {
+        success: false,
+        error: `Could not get access key: ${accessKeyResult.error?.cause?.name || "Unknown"}`
+      };
+    }
+    const nonce = accessKeyResult.result.nonce + 1;
+    const blockHash = accessKeyResult.result.block_hash;
+    const amountYocto = BigInt(Math.floor(parseFloat(amountNear) * 1e24));
+    const transaction = buildTransferTransaction(
+      treasuryAccount,
+      publicKey,
+      nonce,
+      accountId,
+      blockHash,
+      amountYocto,
+      bs582.default
+    );
+    const txHash = createHash("sha256").update(transaction).digest();
+    const signature = nacl2.default.sign.detached(txHash, secretKey);
+    const signedTx = buildSignedTransaction(transaction, signature, publicKey);
+    const submitResponse = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "send-tx",
+        method: "broadcast_tx_commit",
+        params: [Buffer.from(signedTx).toString("base64")]
+      })
+    });
+    const submitResult = await submitResponse.json();
+    if (submitResult.error) {
+      console.error("[MPC] Transaction error:", submitResult.error);
+      return {
+        success: false,
+        error: submitResult.error.data || submitResult.error.message || "Transaction failed"
+      };
+    }
+    const resultHash = submitResult.result?.transaction?.hash || "unknown";
+    console.log("[MPC] Funded account:", accountId, "txHash:", resultHash);
+    return { success: true, txHash: resultHash };
+  } catch (error) {
+    console.error("[MPC] Treasury funding failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error"
+    };
+  }
+}
+function buildTransferTransaction(signerId, publicKey, nonce, receiverId, blockHash, amount, bs582) {
+  const parts = [];
+  parts.push(serializeString(signerId));
+  parts.push(new Uint8Array([0]));
+  parts.push(new Uint8Array(publicKey));
+  parts.push(serializeU64(BigInt(nonce)));
+  parts.push(serializeString(receiverId));
+  parts.push(bs582.decode(blockHash));
+  parts.push(serializeU32(1));
+  parts.push(new Uint8Array([3]));
+  parts.push(serializeU128(amount));
+  return concatArrays(parts);
+}
+function buildSignedTransaction(transaction, signature, publicKey) {
+  const parts = [];
+  parts.push(transaction);
+  parts.push(new Uint8Array([0]));
+  parts.push(new Uint8Array(signature));
+  return concatArrays(parts);
+}
+function serializeString(str) {
+  const bytes = Buffer.from(str, "utf8");
+  const len = serializeU32(bytes.length);
+  return concatArrays([len, bytes]);
+}
+function serializeU32(num) {
+  const buf = Buffer.alloc(4);
+  buf.writeUInt32LE(num);
+  return buf;
+}
+function serializeU64(num) {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(num);
+  return buf;
+}
+function serializeU128(num) {
+  const buf = Buffer.alloc(16);
+  buf.writeBigUInt64LE(num & BigInt("0xFFFFFFFFFFFFFFFF"), 0);
+  buf.writeBigUInt64LE(num >> BigInt(64), 8);
+  return buf;
+}
+function concatArrays(arrays) {
+  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}
 var MPCAccountManager = class {
   networkId;
   mpcContractId;
   accountPrefix;
+  treasuryAccount;
+  treasuryPrivateKey;
+  fundingAmount;
   constructor(config) {
     this.networkId = config.networkId;
     this.mpcContractId = getMPCContractId(config.networkId);
     this.accountPrefix = config.accountPrefix || "anon";
+    this.treasuryAccount = config.treasuryAccount;
+    this.treasuryPrivateKey = config.treasuryPrivateKey;
+    this.fundingAmount = config.fundingAmount || "0.01";
   }
   /**
    * Create a new NEAR account for an anonymous user
@@ -913,13 +1054,56 @@ var MPCAccountManager = class {
         };
       }
     }
-    console.warn("[MPC] Mainnet account creation requires funded creator");
-    return {
-      nearAccountId,
-      derivationPath,
-      mpcPublicKey: "mainnet-pending",
-      onChain: false
-    };
+    try {
+      const seed = createHash("sha256").update(`implicit-${userId}`).digest();
+      const publicKeyBytes = derivePublicKey(seed);
+      const implicitAccountId = publicKeyBytes.toString("hex");
+      const publicKey = `ed25519:${base58Encode(publicKeyBytes)}`;
+      console.log("[MPC] Created mainnet implicit account:", implicitAccountId);
+      const alreadyExists = await accountExists(implicitAccountId, this.networkId);
+      if (alreadyExists) {
+        console.log("[MPC] Implicit account already funded:", implicitAccountId);
+        return {
+          nearAccountId: implicitAccountId,
+          derivationPath,
+          mpcPublicKey: publicKey,
+          onChain: true
+        };
+      }
+      let onChain = false;
+      if (this.treasuryAccount && this.treasuryPrivateKey) {
+        console.log("[MPC] Funding implicit account from treasury...");
+        const fundResult = await fundAccountFromTreasury(
+          implicitAccountId,
+          this.treasuryAccount,
+          this.treasuryPrivateKey,
+          this.fundingAmount,
+          this.networkId
+        );
+        if (fundResult.success) {
+          console.log("[MPC] Account funded:", fundResult.txHash);
+          onChain = true;
+        } else {
+          console.warn("[MPC] Funding failed, account will be dormant:", fundResult.error);
+        }
+      } else {
+        console.warn("[MPC] No treasury configured, account will be dormant until funded");
+      }
+      return {
+        nearAccountId: implicitAccountId,
+        derivationPath,
+        mpcPublicKey: publicKey,
+        onChain
+      };
+    } catch (error) {
+      console.error("[MPC] Mainnet implicit account creation failed:", error);
+      return {
+        nearAccountId,
+        derivationPath,
+        mpcPublicKey: "creation-failed",
+        onChain: false
+      };
+    }
   }
   /**
    * Add a recovery wallet as an access key to the MPC account
@@ -1560,10 +1744,10 @@ function createOAuthRouter(config) {
         sameSite: "lax",
         maxAge: 10 * 60 * 1e3
       });
-      res.json({ url, state });
+      return res.json({ url, state });
     } catch (error) {
       console.error("[OAuth] Start error:", error);
-      res.status(500).json({ error: "Failed to start OAuth flow" });
+      return res.status(500).json({ error: "Failed to start OAuth flow" });
     }
   });
   router.post("/:provider/callback", async (req, res) => {
@@ -1679,7 +1863,7 @@ function createOAuthRouter(config) {
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"]
       });
-      res.json({
+      return res.json({
         success: true,
         user: {
           id: newUser.id,
@@ -1693,7 +1877,7 @@ function createOAuthRouter(config) {
       });
     } catch (error) {
       console.error("[OAuth] Callback error:", error);
-      res.status(500).json({ error: "OAuth authentication failed" });
+      return res.status(500).json({ error: "OAuth authentication failed" });
     }
   });
   router.post("/:provider/link", async (req, res) => {
@@ -1723,13 +1907,13 @@ function createOAuthRouter(config) {
         connectedAt: /* @__PURE__ */ new Date()
       };
       await db.linkOAuthProvider(session.userId, providerData);
-      res.json({
+      return res.json({
         success: true,
         message: `${provider} account linked successfully`
       });
     } catch (error) {
       console.error("[OAuth] Link error:", error);
-      res.status(500).json({ error: "Failed to link provider" });
+      return res.status(500).json({ error: "Failed to link provider" });
     }
   });
   return router;
@@ -2274,7 +2458,10 @@ function createAnonAuth(config) {
   });
   const mpcManager = createMPCManager({
     networkId: config.nearNetwork,
-    accountPrefix: "anon"
+    accountPrefix: config.mpc?.accountPrefix || "anon",
+    treasuryAccount: config.mpc?.treasuryAccount,
+    treasuryPrivateKey: config.mpc?.treasuryPrivateKey,
+    fundingAmount: config.mpc?.fundingAmount
   });
   let walletRecovery;
   let ipfsRecovery;

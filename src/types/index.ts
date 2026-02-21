@@ -37,6 +37,20 @@ export interface AnonAuthConfig {
   
   /** OAuth provider configuration */
   oauth?: OAuthConfig;
+  
+  /** MPC account configuration */
+  mpc?: MPCAccountConfig;
+}
+
+export interface MPCAccountConfig {
+  /** Treasury account for auto-funding new accounts */
+  treasuryAccount?: string;
+  /** Treasury account private key (ed25519:...) */
+  treasuryPrivateKey?: string;
+  /** Amount of NEAR to fund new accounts (default: 0.01) */
+  fundingAmount?: string;
+  /** Account name prefix (default: 'anon') */
+  accountPrefix?: string;
 }
 
 export interface OAuthConfig {
@@ -378,6 +392,10 @@ export interface RegistrationResponseJSON {
     transports?: AuthenticatorTransport[];
   };
   clientExtensionResults: Record<string, unknown>;
+  /** Authenticator attachment type (platform = device built-in, cross-platform = hardware key) */
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+  /** Transport methods (for privacy detection) */
+  transports?: AuthenticatorTransport[];
 }
 
 export interface AuthenticationResponseJSON {

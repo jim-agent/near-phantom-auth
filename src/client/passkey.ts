@@ -102,6 +102,11 @@ export async function createPasskey(
 
   const response = credential.response as AuthenticatorAttestationResponse;
 
+  // Get authenticator attachment (platform = likely synced, cross-platform = hardware key)
+  const rawAttachment = (credential as PublicKeyCredential & { authenticatorAttachment?: string }).authenticatorAttachment;
+  const authenticatorAttachment = rawAttachment as 'platform' | 'cross-platform' | undefined;
+  const transports = response.getTransports?.() as RegistrationResponseJSON['response']['transports'];
+
   // Convert response to JSON format
   return {
     id: credential.id,
@@ -110,10 +115,32 @@ export async function createPasskey(
     response: {
       clientDataJSON: bufferToBase64url(response.clientDataJSON),
       attestationObject: bufferToBase64url(response.attestationObject),
-      transports: response.getTransports?.() as AuthenticationResponseJSON['response']['transports'],
+      transports,
     },
-    clientExtensionResults: credential.getClientExtensionResults(),
+    clientExtensionResults: credential.getClientExtensionResults() as Record<string, unknown>,
+    // Privacy metadata
+    authenticatorAttachment,
+    transports,
   };
+}
+
+/**
+ * Check if credential appears to use cloud-synced storage
+ * Returns true if likely synced (platform authenticator), false if likely safe (hardware key)
+ */
+export function isLikelyCloudSynced(credential: RegistrationResponseJSON): boolean {
+  const { authenticatorAttachment, transports } = credential;
+  
+  // Hardware keys are safe
+  if (authenticatorAttachment === 'cross-platform') return false;
+  if (transports?.includes('usb') || transports?.includes('nfc')) return false;
+  
+  // Platform authenticator with internal transport = likely synced
+  if (authenticatorAttachment === 'platform') return true;
+  if (transports?.includes('internal')) return true;
+  
+  // Default to warning (safer)
+  return true;
 }
 
 /**
@@ -161,6 +188,6 @@ export async function authenticateWithPasskey(
       signature: bufferToBase64url(response.signature),
       userHandle: response.userHandle ? bufferToBase64url(response.userHandle) : undefined,
     },
-    clientExtensionResults: credential.getClientExtensionResults(),
+    clientExtensionResults: credential.getClientExtensionResults() as Record<string, unknown>,
   };
 }

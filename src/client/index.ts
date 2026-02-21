@@ -82,4 +82,5 @@ export {
   isPlatformAuthenticatorAvailable,
   createPasskey,
   authenticateWithPasskey,
+  isLikelyCloudSynced,
 } from './passkey.js';

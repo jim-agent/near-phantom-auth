@@ -151,6 +151,9 @@ async function createPasskey(options) {
     throw new Error("Credential creation failed");
   }
   const response = credential.response;
+  const rawAttachment = credential.authenticatorAttachment;
+  const authenticatorAttachment = rawAttachment;
+  const transports = response.getTransports?.();
   return {
     id: credential.id,
     rawId: bufferToBase64url(credential.rawId),
@@ -158,10 +161,21 @@ async function createPasskey(options) {
     response: {
       clientDataJSON: bufferToBase64url(response.clientDataJSON),
       attestationObject: bufferToBase64url(response.attestationObject),
-      transports: response.getTransports?.()
+      transports
     },
-    clientExtensionResults: credential.getClientExtensionResults()
+    clientExtensionResults: credential.getClientExtensionResults(),
+    // Privacy metadata
+    authenticatorAttachment,
+    transports
   };
+}
+function isLikelyCloudSynced(credential) {
+  const { authenticatorAttachment, transports } = credential;
+  if (authenticatorAttachment === "cross-platform") return false;
+  if (transports?.includes("usb") || transports?.includes("nfc")) return false;
+  if (authenticatorAttachment === "platform") return true;
+  if (transports?.includes("internal")) return true;
+  return true;
 }
 async function authenticateWithPasskey(options) {
   if (!isWebAuthnSupported()) {
@@ -209,7 +223,8 @@ function AnonAuthProvider({ apiUrl, children }) {
     expiresAt: null,
     webAuthnSupported: false,
     platformAuthAvailable: false,
-    error: null
+    error: null,
+    credentialCloudSynced: null
   });
   react.useEffect(() => {
     const checkSupport = async () => {
@@ -247,9 +262,10 @@ function AnonAuthProvider({ apiUrl, children }) {
   }, [api]);
   const register = react.useCallback(async () => {
     try {
-      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      setState((prev) => ({ ...prev, isLoading: true, error: null, credentialCloudSynced: null }));
       const { challengeId, options, tempUserId, codename } = await api.startRegistration();
       const credential = await createPasskey(options);
+      const cloudSynced = isLikelyCloudSynced(credential);
       const result = await api.finishRegistration(
         challengeId,
         credential,
@@ -262,7 +278,8 @@ function AnonAuthProvider({ apiUrl, children }) {
           isLoading: false,
           isAuthenticated: true,
           codename: result.codename,
-          nearAccountId: result.nearAccountId
+          nearAccountId: result.nearAccountId,
+          credentialCloudSynced: cloudSynced
         }));
       } else {
         throw new Error("Registration failed");
@@ -641,6 +658,7 @@ exports.OAuthProvider = OAuthProvider;
 exports.authenticateWithPasskey = authenticateWithPasskey;
 exports.createApiClient = createApiClient;
 exports.createPasskey = createPasskey;
+exports.isLikelyCloudSynced = isLikelyCloudSynced;
 exports.isPlatformAuthenticatorAvailable = isPlatformAuthenticatorAvailable;
 exports.isWebAuthnSupported = isWebAuthnSupported;
 exports.useAnonAuth = useAnonAuth;
