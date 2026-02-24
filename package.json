@@ -1,6 +1,6 @@
 {
   "name": "@vitalpoint/near-phantom-auth",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Anonymous passkey authentication with NEAR MPC accounts and decentralized recovery",
   "type": "module",
   "main": "./dist/index.js",
