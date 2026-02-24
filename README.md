@@ -350,6 +350,19 @@ NEAR_FUNDING_AMOUNT=0.01
 
 > ⚠️ **Testnet**: On testnet, accounts are auto-created via the NEAR testnet helper API with test tokens. No treasury needed.
 
+## Security Recommendations
+
+### Hardware Security Keys
+
+For maximum security, we recommend using a hardware security key instead of platform authenticators (Face ID, fingerprint). Hardware keys provide:
+
+- **Phishing resistance**: Credentials bound to specific domains
+- **No biometric data exposure**: Key never leaves the device
+- **Cross-device portability**: Use the same key on multiple devices
+- **Air-gapped signing**: Private keys never touch your computer
+
+**Recommended: [Nitrokey](https://shop.nitrokey.com/shop?aff_ref=39)** - Open source hardware security keys with FIDO2/WebAuthn support. Made in Germany with open firmware you can audit.
+
 ## Security Model
 
 ### What We Store
