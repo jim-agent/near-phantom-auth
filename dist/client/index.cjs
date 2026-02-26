@@ -26,17 +26,22 @@ function createApiClient(config) {
     return response.json();
   }
   return {
-    // Registration
-    async startRegistration() {
-      return request("POST", "/register/start");
+    // Registration with optional username
+    async startRegistration(username) {
+      return request("POST", "/register/start", username ? { username } : void 0);
     },
-    async finishRegistration(challengeId, response, tempUserId, codename) {
+    async finishRegistration(challengeId, response, tempUserId, codename, username) {
       return request("POST", "/register/finish", {
         challengeId,
         response,
         tempUserId,
-        codename
+        codename,
+        username
       });
+    },
+    // Check username availability
+    async checkUsername(username) {
+      return request("POST", "/username/check", { username });
     },
     // Authentication
     async startAuthentication(codename) {
@@ -47,6 +52,20 @@ function createApiClient(config) {
         challengeId,
         response
       });
+    },
+    // OAuth
+    async getOAuthProviders() {
+      return request("GET", "/oauth/providers");
+    },
+    async startOAuth(provider) {
+      return request("POST", "/oauth/start", { provider });
+    },
+    // Email Magic Link
+    async sendMagicLink(email) {
+      return request("POST", "/email/send", { email });
+    },
+    async verifyMagicLink(token) {
+      return request("POST", "/email/verify", { token });
     },
     // Session
     async getSession() {
@@ -219,12 +238,16 @@ function AnonAuthProvider({ apiUrl, children }) {
     isLoading: true,
     isAuthenticated: false,
     codename: null,
+    username: null,
     nearAccountId: null,
     expiresAt: null,
+    authMethod: null,
+    email: null,
     webAuthnSupported: false,
     platformAuthAvailable: false,
     error: null,
-    credentialCloudSynced: null
+    credentialCloudSynced: null,
+    oauthProviders: []
   });
   react.useEffect(() => {
     const checkSupport = async () => {
@@ -239,16 +262,26 @@ function AnonAuthProvider({ apiUrl, children }) {
     checkSupport();
   }, []);
   react.useEffect(() => {
-    const checkSession = async () => {
+    const initialize = async () => {
       try {
         const session = await api.getSession();
+        let oauthProviders = [];
+        try {
+          const providers = await api.getOAuthProviders();
+          oauthProviders = providers.providers || [];
+        } catch {
+        }
         setState((prev) => ({
           ...prev,
           isLoading: false,
           isAuthenticated: session.authenticated,
           codename: session.codename || null,
+          username: session.username || null,
           nearAccountId: session.nearAccountId || null,
-          expiresAt: session.expiresAt ? new Date(session.expiresAt) : null
+          expiresAt: session.expiresAt ? new Date(session.expiresAt) : null,
+          authMethod: session.authMethod || null,
+          email: session.email || null,
+          oauthProviders
         }));
       } catch (error) {
         setState((prev) => ({
@@ -258,19 +291,20 @@ function AnonAuthProvider({ apiUrl, children }) {
         }));
       }
     };
-    checkSession();
+    initialize();
   }, [api]);
-  const register = react.useCallback(async () => {
+  const register = react.useCallback(async (username) => {
     try {
       setState((prev) => ({ ...prev, isLoading: true, error: null, credentialCloudSynced: null }));
-      const { challengeId, options, tempUserId, codename } = await api.startRegistration();
+      const { challengeId, options, tempUserId, codename } = await api.startRegistration(username);
       const credential = await createPasskey(options);
       const cloudSynced = isLikelyCloudSynced(credential);
       const result = await api.finishRegistration(
         challengeId,
         credential,
         tempUserId,
-        codename
+        codename,
+        username
       );
       if (result.success) {
         setState((prev) => ({
@@ -278,7 +312,9 @@ function AnonAuthProvider({ apiUrl, children }) {
           isLoading: false,
           isAuthenticated: true,
           codename: result.codename,
+          username: result.username || username || null,
           nearAccountId: result.nearAccountId,
+          authMethod: "passkey",
           credentialCloudSynced: cloudSynced
         }));
       } else {
@@ -353,6 +389,67 @@ function AnonAuthProvider({ apiUrl, children }) {
   const clearError = react.useCallback(() => {
     setState((prev) => ({ ...prev, error: null }));
   }, []);
+  const checkUsername = react.useCallback(async (username) => {
+    try {
+      return await api.checkUsername(username);
+    } catch (error) {
+      return { available: false, suggestion: void 0 };
+    }
+  }, [api]);
+  const startOAuth = react.useCallback(async (provider) => {
+    try {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      const { authUrl } = await api.startOAuth(provider);
+      window.location.href = authUrl;
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: error instanceof Error ? error.message : "OAuth failed"
+      }));
+    }
+  }, [api]);
+  const sendMagicLink = react.useCallback(async (email) => {
+    try {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      const result = await api.sendMagicLink(email);
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: result.success ? null : "Failed to send magic link"
+      }));
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: error instanceof Error ? error.message : "Failed to send magic link"
+      }));
+    }
+  }, [api]);
+  const verifyMagicLink = react.useCallback(async (token) => {
+    try {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      const result = await api.verifyMagicLink(token);
+      if (result.success) {
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isAuthenticated: true,
+          codename: result.codename || null,
+          nearAccountId: result.nearAccountId || null,
+          authMethod: "email"
+        }));
+      } else {
+        throw new Error("Invalid or expired magic link");
+      }
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: error instanceof Error ? error.message : "Magic link verification failed"
+      }));
+    }
+  }, [api]);
   const recovery = {
     async linkWallet(signMessage, walletAccountId) {
       const { challenge } = await api.startWalletLink();
@@ -393,6 +490,10 @@ function AnonAuthProvider({ apiUrl, children }) {
     logout,
     refreshSession,
     clearError,
+    checkUsername,
+    startOAuth,
+    sendMagicLink,
+    verifyMagicLink,
     recovery
   };
   return /* @__PURE__ */ jsxRuntime.jsx(AnonAuthContext.Provider, { value, children });

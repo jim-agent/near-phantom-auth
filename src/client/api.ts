@@ -21,19 +21,31 @@ export interface ApiClientConfig {
 export interface SessionInfo {
   authenticated: boolean;
   codename?: string;
+  username?: string;
   nearAccountId?: string;
   expiresAt?: string;
+  authMethod?: 'passkey' | 'oauth' | 'email';
+  email?: string;
+}
+
+export interface OAuthProvider {
+  name: string;
+  authUrl: string;
 }
 
 export interface ApiClient {
-  // Registration
-  startRegistration(): Promise<RegistrationStartResponse & { codename: string; tempUserId: string }>;
+  // Registration with optional username
+  startRegistration(username?: string): Promise<RegistrationStartResponse & { codename: string; tempUserId: string; username?: string }>;
   finishRegistration(
     challengeId: string,
     response: RegistrationResponseJSON,
     tempUserId: string,
-    codename: string
-  ): Promise<RegistrationFinishResponse>;
+    codename: string,
+    username?: string
+  ): Promise<RegistrationFinishResponse & { username?: string }>;
+  
+  // Check username availability
+  checkUsername(username: string): Promise<{ available: boolean; suggestion?: string }>;
   
   // Authentication
   startAuthentication(codename?: string): Promise<AuthenticationStartResponse>;
@@ -41,6 +53,14 @@ export interface ApiClient {
     challengeId: string,
     response: AuthenticationResponseJSON
   ): Promise<AuthenticationFinishResponse>;
+  
+  // OAuth
+  getOAuthProviders(): Promise<{ providers: OAuthProvider[] }>;
+  startOAuth(provider: string): Promise<{ authUrl: string }>;
+  
+  // Email Magic Link
+  sendMagicLink(email: string): Promise<{ success: boolean; message: string }>;
+  verifyMagicLink(token: string): Promise<{ success: boolean; codename?: string; nearAccountId?: string }>;
   
   // Session
   getSession(): Promise<SessionInfo>;
@@ -95,18 +115,24 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
   }
 
   return {
-    // Registration
-    async startRegistration() {
-      return request('POST', '/register/start');
+    // Registration with optional username
+    async startRegistration(username?: string) {
+      return request('POST', '/register/start', username ? { username } : undefined);
     },
 
-    async finishRegistration(challengeId, response, tempUserId, codename) {
+    async finishRegistration(challengeId, response, tempUserId, codename, username?: string) {
       return request('POST', '/register/finish', {
         challengeId,
         response,
         tempUserId,
         codename,
+        username,
       });
+    },
+
+    // Check username availability
+    async checkUsername(username: string) {
+      return request('POST', '/username/check', { username });
     },
 
     // Authentication
@@ -119,6 +145,24 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
         challengeId,
         response,
       });
+    },
+
+    // OAuth
+    async getOAuthProviders() {
+      return request('GET', '/oauth/providers');
+    },
+
+    async startOAuth(provider: string) {
+      return request('POST', '/oauth/start', { provider });
+    },
+
+    // Email Magic Link
+    async sendMagicLink(email: string) {
+      return request('POST', '/email/send', { email });
+    },
+
+    async verifyMagicLink(token: string) {
+      return request('POST', '/email/verify', { token });
     },
 
     // Session

@@ -9,10 +9,16 @@ interface AnonAuthState {
     isAuthenticated: boolean;
     /** User's codename (e.g., "ALPHA-7") */
     codename: string | null;
+    /** User's chosen username (if custom username enabled) */
+    username: string | null;
     /** User's NEAR account ID */
     nearAccountId: string | null;
     /** Session expiration time */
     expiresAt: Date | null;
+    /** Authentication method used */
+    authMethod: 'passkey' | 'oauth' | 'email' | null;
+    /** User's email (if authenticated via OAuth or magic link) */
+    email: string | null;
     /** Whether WebAuthn is supported */
     webAuthnSupported: boolean;
     /** Whether platform authenticator (biometric) is available */
@@ -21,10 +27,15 @@ interface AnonAuthState {
     error: string | null;
     /** Whether the last registered credential appears cloud-synced (privacy warning) */
     credentialCloudSynced: boolean | null;
+    /** Available OAuth providers */
+    oauthProviders: Array<{
+        name: string;
+        authUrl: string;
+    }>;
 }
 interface AnonAuthActions {
-    /** Register a new anonymous identity */
-    register(): Promise<void>;
+    /** Register a new identity with passkey (optional custom username) */
+    register(username?: string): Promise<void>;
     /** Sign in with existing passkey */
     login(codename?: string): Promise<void>;
     /** Sign out */
@@ -33,6 +44,17 @@ interface AnonAuthActions {
     refreshSession(): Promise<void>;
     /** Clear error */
     clearError(): void;
+    /** Check if username is available */
+    checkUsername(username: string): Promise<{
+        available: boolean;
+        suggestion?: string;
+    }>;
+    /** Start OAuth flow */
+    startOAuth(provider: string): Promise<void>;
+    /** Send magic link email */
+    sendMagicLink(email: string): Promise<void>;
+    /** Verify magic link token */
+    verifyMagicLink(token: string): Promise<void>;
 }
 interface RecoveryActions {
     /** Link a NEAR wallet for recovery */
@@ -113,7 +135,7 @@ interface OAuthProviderProps {
     onLoginSuccess?: (user: OAuthUser, isNewUser: boolean) => void;
     onLoginError?: (error: Error) => void;
 }
-declare function OAuthProvider({ children, apiUrl, onLoginSuccess, onLoginError, }: OAuthProviderProps): react_jsx_runtime.JSX.Element;
+declare function OAuthProvider$1({ children, apiUrl, onLoginSuccess, onLoginError, }: OAuthProviderProps): react_jsx_runtime.JSX.Element;
 declare function useOAuth(): OAuthContextValue;
 /**
  * Hook to handle OAuth callback from URL parameters
@@ -140,17 +162,46 @@ interface ApiClientConfig {
 interface SessionInfo {
     authenticated: boolean;
     codename?: string;
+    username?: string;
     nearAccountId?: string;
     expiresAt?: string;
+    authMethod?: 'passkey' | 'oauth' | 'email';
+    email?: string;
+}
+interface OAuthProvider {
+    name: string;
+    authUrl: string;
 }
 interface ApiClient {
-    startRegistration(): Promise<RegistrationStartResponse & {
+    startRegistration(username?: string): Promise<RegistrationStartResponse & {
         codename: string;
         tempUserId: string;
+        username?: string;
     }>;
-    finishRegistration(challengeId: string, response: RegistrationResponseJSON, tempUserId: string, codename: string): Promise<RegistrationFinishResponse>;
+    finishRegistration(challengeId: string, response: RegistrationResponseJSON, tempUserId: string, codename: string, username?: string): Promise<RegistrationFinishResponse & {
+        username?: string;
+    }>;
+    checkUsername(username: string): Promise<{
+        available: boolean;
+        suggestion?: string;
+    }>;
     startAuthentication(codename?: string): Promise<AuthenticationStartResponse>;
     finishAuthentication(challengeId: string, response: AuthenticationResponseJSON): Promise<AuthenticationFinishResponse>;
+    getOAuthProviders(): Promise<{
+        providers: OAuthProvider[];
+    }>;
+    startOAuth(provider: string): Promise<{
+        authUrl: string;
+    }>;
+    sendMagicLink(email: string): Promise<{
+        success: boolean;
+        message: string;
+    }>;
+    verifyMagicLink(token: string): Promise<{
+        success: boolean;
+        codename?: string;
+        nearAccountId?: string;
+    }>;
     getSession(): Promise<SessionInfo>;
     logout(): Promise<void>;
     startWalletLink(): Promise<{
@@ -212,4 +263,4 @@ declare function isLikelyCloudSynced(credential: RegistrationResponseJSON): bool
  */
 declare function authenticateWithPasskey(options: PublicKeyCredentialRequestOptionsJSON): Promise<AuthenticationResponseJSON>;
 
-export { type AnonAuthActions, type AnonAuthContextValue, AnonAuthProvider, type AnonAuthProviderProps, type AnonAuthState, type ApiClient, type ApiClientConfig, type OAuthActions, type OAuthContextValue, OAuthProvider, type OAuthProviderProps, type OAuthProviders, type OAuthState, type OAuthUser, type RecoveryActions, type SessionInfo, authenticateWithPasskey, createApiClient, createPasskey, isLikelyCloudSynced, isPlatformAuthenticatorAvailable, isWebAuthnSupported, useAnonAuth, useOAuth, useOAuthCallback };
+export { type AnonAuthActions, type AnonAuthContextValue, AnonAuthProvider, type AnonAuthProviderProps, type AnonAuthState, type ApiClient, type ApiClientConfig, type OAuthActions, type OAuthContextValue, OAuthProvider$1 as OAuthProvider, type OAuthProviderProps, type OAuthProviders, type OAuthState, type OAuthUser, type RecoveryActions, type SessionInfo, authenticateWithPasskey, createApiClient, createPasskey, isLikelyCloudSynced, isPlatformAuthenticatorAvailable, isWebAuthnSupported, useAnonAuth, useOAuth, useOAuthCallback };
